@@ -19,6 +19,7 @@ gemfile(true) do
   gem "oj"
   gem "multi_json"
   gem "benchmark-ips"
+  gem "jsonapi-serializer"
 end
 
 require "active_record"
@@ -180,6 +181,64 @@ class PostRepresenter < Representable::Decorator
   end
 end
 
+class JsonApiStandardCommentSerializer
+  include JSONAPI::Serializer
+
+  attribute :id
+  attribute :body
+end
+
+class JsonApiStandardPostSerializer
+  include JSONAPI::Serializer
+
+  # set_type :post  # optional
+  attribute :id
+  attribute :body
+  attribute :commenter_names
+
+  attribute :comments do |post|
+    post.comments.map { |comment| JsonApiSameFormatCommentSerializer.new(comment) }
+  end
+end
+
+# code to convert from JSON:API output to "flat" JSON, like the other serializers build
+class JsonApiSameFormatSerializer
+  include JSONAPI::Serializer
+
+  def as_json(*_options)
+    hash = serializable_hash
+
+    if hash[:data].is_a? Hash
+      hash[:data][:attributes]
+
+    elsif hash[:data].is_a? Array
+      hash[:data].pluck(:attributes)
+
+    elsif hash[:data].nil?
+      { }
+
+    else
+      raise "unexpected data type #{hash[:data].class}"
+    end
+  end
+end
+
+class JsonApiSameFormatCommentSerializer < JsonApiSameFormatSerializer
+  attribute :id
+  attribute :body
+end
+
+class JsonApiSameFormatPostSerializer < JsonApiSameFormatSerializer
+  # set_type :post  # optional
+  attribute :id
+  attribute :body
+  attribute :commenter_names
+
+  attribute :comments do |post|
+    post.comments.map { |comment| JsonApiSameFormatCommentSerializer.new(comment) }
+  end
+end
+
 post = Post.create!(body: 'post')
 user1 = User.create!(name: 'John')
 user2 = User.create!(name: 'Jane')
@@ -207,7 +266,10 @@ end
 primalize = proc do
   PrimalizePostResource.new(post).to_json
 end
-[alba, jbuilder, ams, rails, blueprinter, representable, alba_inline, primalize].each {|x| puts x.call }
+jsonapi = proc { JsonApiStandardPostSerializer.new(post).to_json }
+jsonapi_same_format = proc { JsonApiSameFormatPostSerializer.new(post).to_json }
+
+[alba, jbuilder, rails, ams, blueprinter, representable, alba_inline, primalize, jsonapi, jsonapi_same_format].each {|x| puts x.call }
 
 require 'benchmark'
 time = 1000
@@ -220,6 +282,8 @@ Benchmark.bmbm do |x|
   x.report(:representable) { time.times(&representable) }
   x.report(:alba_inline) { time.times(&alba_inline) }
   x.report(:primalize) { time.times(&primalize) }
+  x.report(:jsonapi) { time.times(&jsonapi) }
+  x.report(:jsonapi_same_format) { time.times(&jsonapi_same_format) }
 end
 
 require 'benchmark/ips'
@@ -232,6 +296,8 @@ Benchmark.ips do |x|
   x.report(:representable, &representable)
   x.report(:alba_inline, &alba_inline)
   x.report(:primalize, &primalize)
+  x.report(:jsonapi, &jsonapi)
+  x.report(:jsonapi_same_format, &jsonapi_same_format)
 
   x.compare!
 end
